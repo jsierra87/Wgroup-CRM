@@ -99,12 +99,14 @@ interface NavItem {
   minRole?: AccountRole;
 }
 
+// Filas sin `minRole` = las ve todo el mundo (incluidos los agentes).
+// Filas con `minRole: "admin"` = solo admin y owner.
 const navItems: NavItem[] = [
-  { href: "/dashboard", labelKey: "dashboard", icon: LayoutDashboard },
+  { href: "/dashboard", labelKey: "dashboard", icon: LayoutDashboard, minRole: "admin" },
   { href: "/inbox", labelKey: "inbox", icon: MessageSquare },
   { href: "/notifications", labelKey: "notifications", icon: Bell },
   { href: "/contacts", labelKey: "contacts", icon: Users },
-  { href: "/pipelines", labelKey: "pipelines", icon: GitBranch },
+  { href: "/pipelines", labelKey: "pipelines", icon: GitBranch, minRole: "admin" },
   {
     href: "/analytics",
     labelKey: "analytics",
@@ -112,14 +114,14 @@ const navItems: NavItem[] = [
     soon: true,
     minRole: "admin",
   },
-  { href: "/broadcasts", labelKey: "broadcasts", icon: Radio },
-  { href: "/automations", labelKey: "automations", icon: Zap },
-  { href: "/flows", labelKey: "flows", icon: Workflow, beta: true },
-  { href: "/agents", labelKey: "aiAgents", icon: Bot },
+  { href: "/broadcasts", labelKey: "broadcasts", icon: Radio, minRole: "admin" },
+  { href: "/automations", labelKey: "automations", icon: Zap, minRole: "admin" },
+  { href: "/flows", labelKey: "flows", icon: Workflow, beta: true, minRole: "admin" },
+  { href: "/agents", labelKey: "aiAgents", icon: Bot, minRole: "admin" },
 ];
 
-const bottomNavItems = [
-  { href: "/settings", labelKey: "settings", icon: Settings },
+const bottomNavItems: NavItem[] = [
+  { href: "/settings", labelKey: "settings", icon: Settings, minRole: "admin" },
 ];
 
 interface SidebarProps {
@@ -136,6 +138,16 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
   const { profile, profileLoading, account, accountRole, signOut } = useAuth();
   const totalUnread = useTotalUnread();
   const unreadNotifications = useUnreadNotifications();
+
+  // ¿El usuario actual es admin o superior? Se calcula una sola vez
+  // y se reutiliza en el filtro del menú y en el menú desplegable.
+  const isAdmin = !!accountRole && hasMinRole(accountRole, "admin");
+
+  // El logo apunta al dashboard sólo si el usuario puede verlo.
+  // Para un agente lleva a la bandeja de entrada, que es su pantalla
+  // principal — así el clic en el logo nunca cae en una ruta vetada.
+  const homeHref = isAdmin ? "/dashboard" : "/inbox";
+
   // Only surface the account-name strip when it actually carries
   // information. A solo user's personal account is named after them
   // (the 017 signup trigger seeds it from `full_name`), so showing it
@@ -204,7 +216,7 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
         {/* Logo row. On mobile we put a close button here; on desktop the
             close button is hidden since the sidebar is always-visible. */}
         <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border px-4">
-          <Link href="/dashboard" className="flex items-center gap-2">
+          <Link href={homeHref} className="flex items-center gap-2">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
               <MessageSquare className="h-4 w-4" />
             </div>
@@ -319,7 +331,15 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
           <div className="my-4 border-t border-border" />
 
           <ul className="flex flex-col gap-1">
-            {bottomNavItems.map((item) => {
+            {bottomNavItems
+              // Mismo criterio que el menú principal: si la fila declara
+              // un rol mínimo, sólo aparece para quien lo cumple.
+              .filter(
+                (item) =>
+                  !item.minRole ||
+                  (!!accountRole && hasMinRole(accountRole, item.minRole)),
+              )
+              .map((item) => {
               const isActive = pathname.startsWith(item.href);
               return (
                 <li key={item.href}>
@@ -408,6 +428,7 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
               sideOffset={6}
               className="min-w-56 bg-popover text-popover-foreground ring-border"
             >
+              {/* El perfil lo ve todo el mundo — es su propia información. */}
               <DropdownMenuItem
                 render={
                   <Link
@@ -420,18 +441,21 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
                 <User className="size-4" />
                 {t("menuProfile")}
               </DropdownMenuItem>
-              <DropdownMenuItem
-                render={
-                  <Link
-                    href="/settings?tab=whatsapp"
-                    onClick={onClose}
-                    className="text-popover-foreground focus:bg-accent focus:text-accent-foreground"
-                  />
-                }
-              >
-                <Settings className="size-4" />
-                {t("menuSettings")}
-              </DropdownMenuItem>
+              {/* La configuración de WhatsApp es sólo para admin/owner. */}
+              {isAdmin ? (
+                <DropdownMenuItem
+                  render={
+                    <Link
+                      href="/settings?tab=whatsapp"
+                      onClick={onClose}
+                      className="text-popover-foreground focus:bg-accent focus:text-accent-foreground"
+                    />
+                  }
+                >
+                  <Settings className="size-4" />
+                  {t("menuSettings")}
+                </DropdownMenuItem>
+              ) : null}
               <DropdownMenuSeparator className="bg-border" />
               <DropdownMenuItem
                 onClick={signOut}
