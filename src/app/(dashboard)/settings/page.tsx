@@ -6,6 +6,7 @@ import { useTranslations } from 'next-intl';
 
 import { useAuth } from '@/hooks/use-auth';
 import { useTheme } from '@/hooks/use-theme';
+import { hasMinRole } from '@/lib/auth/roles';
 import { SettingsRail } from '@/components/settings/settings-rail';
 import { SettingsOverview } from '@/components/settings/settings-overview';
 import { ProfileForm } from '@/components/settings/profile-form';
@@ -20,6 +21,8 @@ import { DealsSettings } from '@/components/settings/deals-settings';
 import { MembersTab } from '@/components/settings/members-tab';
 import { ApiKeysSettings } from '@/components/settings/api-keys-settings';
 import {
+  DEFAULT_SELF_SERVICE_SECTION,
+  SELF_SERVICE_SECTIONS,
   resolveSection,
   type SettingsSection,
 } from '@/components/settings/settings-sections';
@@ -43,15 +46,28 @@ export default function SettingsPage() {
 function SettingsPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { defaultCurrency } = useAuth();
+  const { defaultCurrency, accountRole } = useAuth();
   const { mode } = useTheme();
   const t = useTranslations('Settings');
+
+  // Falla cerrado: mientras el rol se está resolviendo, `accountRole`
+  // es null y tratamos al usuario como no-admin. Peor caso, un admin
+  // ve su perfil durante una fracción de segundo; nunca al revés.
+  const isAdmin = !!accountRole && hasMinRole(accountRole, 'admin');
 
   // The URL (`?tab=`) is the single source of truth for the active
   // section — deep-linkable, and it keeps the existing links in the
   // app sidebar/header working. Legacy tab values (tags, custom-fields)
   // resolve onto their new home; unknown/empty → the Overview landing.
-  const section = resolveSection(searchParams.get('tab'));
+  const requested = resolveSection(searchParams.get('tab'));
+
+  // Un agente que escriba `/settings?tab=whatsapp` a mano cae en su
+  // perfil en lugar del panel pedido. Esto es lo que de verdad cierra
+  // el acceso: ocultar el enlace en el menú sólo esconde la puerta.
+  const section: SettingsSection =
+    isAdmin || SELF_SERVICE_SECTIONS.includes(requested)
+      ? requested
+      : DEFAULT_SELF_SERVICE_SECTION;
 
   const go = (next: SettingsSection) => {
     const params = new URLSearchParams(searchParams.toString());
