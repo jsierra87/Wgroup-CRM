@@ -609,13 +609,13 @@ export function MessageComposer({
         // Recording bar — replaces the composer while the mic is live.
         <div className="flex items-center gap-3 rounded-xl border border-border bg-muted px-4 py-2.5">
           <span className="flex h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-red-500" />
-          <span className="flex-1 text-sm text-foreground">
+          <span className="min-w-0 flex-1 truncate text-sm text-foreground">
             {t("recording", { current: formatDuration(recordSeconds), max: formatDuration(MAX_RECORDING_SECONDS) })}
           </span>
           <button
             type="button"
             onClick={cancelRecording}
-            className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-card hover:text-foreground"
+            className="shrink-0 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-card hover:text-foreground"
           >
             {t("cancel")}
           </button>
@@ -629,7 +629,7 @@ export function MessageComposer({
           </Button>
         </div>
       ) : (
-        <div className="flex items-end gap-2">
+        <div className="flex flex-wrap items-end gap-2">
           {/* Attach menu — photo / video / document / voice. */}
           <DropdownMenu>
             <DropdownMenuTrigger
@@ -745,7 +745,11 @@ export function MessageComposer({
             // The placeholder text also surfaces the read-only state.
             title={readOnly ? t("readOnlyTitle") : undefined}
             className={cn(
-              "flex-1 resize-none rounded-xl border border-border bg-muted px-4 py-2.5 text-sm text-foreground placeholder-muted-foreground outline-none transition-colors focus:border-primary/50",
+              // On narrow screens the textarea takes the whole first line
+              // (order-first) and the icon buttons wrap onto a second row,
+              // so the placeholder isn't squeezed into ~80px. From `sm` up
+              // it returns to the original single-row flex-1 layout.
+              "order-first w-full min-w-0 resize-none rounded-xl border border-border bg-muted px-4 py-2.5 text-sm text-foreground placeholder-muted-foreground outline-none transition-colors focus:border-primary/50 sm:order-none sm:w-auto sm:flex-1",
               (sessionExpired || readOnly) && "cursor-not-allowed opacity-50"
             )}
           />
@@ -756,7 +760,9 @@ export function MessageComposer({
             gateReason="send messages"
             disabled={!text.trim() || sessionExpired || sending}
             onClick={handleSend}
-            className="h-9 w-9 shrink-0 bg-primary p-0 hover:bg-primary/90 disabled:opacity-40"
+            // ml-auto pushes Send to the far right of the wrapped button
+            // row on mobile; reset at `sm` where the row is single-line.
+            className="ml-auto h-9 w-9 shrink-0 bg-primary p-0 hover:bg-primary/90 disabled:opacity-40 sm:ml-0"
           >
             <Send className="h-4 w-4" />
           </GatedButton>
@@ -765,9 +771,10 @@ export function MessageComposer({
 
       {/* Hint sits outside the flex row so its height doesn't push
           `items-end` buttons below the textarea. Indented to line up
-          under the textarea left edge. */}
+          under the textarea left edge on `sm`+; flush left on mobile
+          where the textarea starts at the container edge. */}
       {!draft && !recording && (
-        <p className="mt-1 pl-[5.5rem] text-[10px] text-muted-foreground">
+        <p className="mt-1 text-[10px] text-muted-foreground sm:pl-[5.5rem]">
           {t("draftHint")}
         </p>
       )}
@@ -886,7 +893,7 @@ function MediaDraftPreview({
               }
             }}
             placeholder={t("addCaption")}
-            className="flex-1 rounded-xl border border-border bg-muted px-4 py-2.5 text-sm text-foreground placeholder-muted-foreground outline-none transition-colors focus:border-primary/50"
+            className="min-w-0 flex-1 rounded-xl border border-border bg-muted px-4 py-2.5 text-sm text-foreground placeholder-muted-foreground outline-none transition-colors focus:border-primary/50"
           />
         )}
         <GatedButton
