@@ -41,7 +41,9 @@
     "defaultAvatar": "Avatar",
     "menuProfile": "Perfil",
     "menuSettings": "Configurações",
-    "menuSignOut": "Sair"
+    "menuSignOut": "Sair",
+    "analytics": "Análises",
+    "soon": "Em breve"
   },
   "Header": {
     "dashboard": "Painel",
@@ -1655,7 +1657,8 @@
         "Marketing": "Marketing",
         "Utility": "Utilidade",
         "Authentication": "Autenticação"
-      }
+      },
+      "toastImageTooLarge": "A imagem tem {size} MB — o limite da Meta é 5 MB."
     },
     "roles": {
       "admin": "Administrador",
@@ -1783,7 +1786,8 @@
       "fields": "Campos e tags",
       "deals": "Negócios e moeda",
       "members": "Membros da equipe",
-      "api": "Chaves de API"
+      "api": "Chaves de API",
+      "meta": "Messenger e Instagram"
     },
     "groups": {
       "account": "Conta",
@@ -2024,6 +2028,40 @@
       "textPlaceholder": "O texto da mensagem a inserir",
       "cancel": "Cancelar",
       "save": "Salvar"
+    },
+    "meta": {
+      "unnamedPage": "Página sem nome",
+      "disconnectConfirm": "Tem certeza de que deseja desconectar esta página?",
+      "errorTitle": "Problema na conexão",
+      "instagramNotLinked": "Nenhuma conta do Instagram está vinculada a esta página.",
+      "channelEnabled": "Canal ativado",
+      "copied": "Copiado",
+      "pageIdLabel": "ID da página: {id}",
+      "messengerDesc": "Receba e responda mensagens da sua página do Facebook.",
+      "instagram": "Instagram",
+      "dangerDesc": "Remove o acesso à página. Conversas e contatos são mantidos.",
+      "channelDisabled": "Canal desativado",
+      "webhookTitle": "Webhook",
+      "requirementPage": "Você precisa de uma página do Facebook. Perfis pessoais não recebem mensagens pela API.",
+      "description": "Conecte sua página do Facebook para receber mensagens do Messenger e do Instagram na mesma caixa de entrada.",
+      "disconnectButton": "Desconectar página",
+      "webhookDesc": "Registre esta URL no seu app da Meta para Messenger e Instagram.",
+      "instagramLinked": "Vinculado a @{username}",
+      "toggleError": "Não foi possível salvar a alteração",
+      "setupDesc": "Adicione NEXT_PUBLIC_META_APP_ID às suas variáveis de ambiente para habilitar a conexão.",
+      "requirementInstagram": "Para o Instagram, a conta deve ser profissional e estar vinculada a essa página.",
+      "readOnly": "Somente leitura",
+      "connectDesc": "Entre com o Facebook e escolha a página que deseja conectar.",
+      "dangerTitle": "Desconectar",
+      "loadError": "Não foi possível carregar a conexão",
+      "connectTitle": "Conectar com a Meta",
+      "connectButton": "Conectar com o Facebook",
+      "disconnected": "Página desconectada",
+      "setupTitle": "Configuração necessária",
+      "title": "Messenger e Instagram",
+      "disconnectError": "Não foi possível desconectar",
+      "webhookUrl": "URL do webhook",
+      "messenger": "Messenger"
     }
   },
   "SignupPage": {
