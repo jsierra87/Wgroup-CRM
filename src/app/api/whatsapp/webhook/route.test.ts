@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // Shared, hoisted state the module mocks close over. Reset per test.
 const h = vi.hoisted(() => ({
   runAutomationsForTrigger: vi.fn(),
+  resumeAwaitingReply: vi.fn(),
   dispatchInboundToFlows: vi.fn(),
   dispatchInboundToAiReply: vi.fn(),
   dispatchWebhookEvent: vi.fn(),
@@ -29,6 +30,18 @@ const h = vi.hoisted(() => ({
     }[],
     /** Error the next storage upload resolves with, if any. */
     storageUploadError: null as { message: string } | null,
+    /** Row `findContactByWaUserId` resolves for a BSUID lookup (#519). */
+    contactByWaUserId: null as Record<string, unknown> | null,
+    /** Rows inserted into `contacts`. */
+    contactInserts: [] as Record<string, unknown>[],
+    /** Patches applied to an existing `contacts` row. */
+    contactUpdates: [] as Record<string, unknown>[],
+    /** Patches applied to `messages` by a status webhook (#535). */
+    messageUpdates: [] as Record<string, unknown>[],
+    /** Row the status webhook's broadcast_recipients lookup resolves. */
+    broadcastRecipient: null as { id: string; status: string } | null,
+    /** Patches applied to that broadcast_recipients row. */
+    recipientUpdates: [] as Record<string, unknown>[],
   },
 }))
 
@@ -80,7 +93,10 @@ vi.mock('@supabase/supabase-js', () => ({
             }),
           }
         case 'broadcast_recipients':
-          // flagBroadcastReplyIfAny: select().eq().eq().in().order().limit()
+          // Two chains land here:
+          //   flagBroadcastReplyIfAny: select().eq().eq().in().order().limit()
+          //   handleStatusUpdate:      select().eq().maybeSingle(), then
+          //                            update().eq()
           return {
             select: () => ({
               eq: () => ({
@@ -92,8 +108,58 @@ vi.mock('@supabase/supabase-js', () => ({
                     }),
                   }),
                 }),
+                maybeSingle: () =>
+                  Promise.resolve({
+                    data: h.state.broadcastRecipient,
+                    error: null,
+                  }),
               }),
             }),
+            update: (patch: Record<string, unknown>) => {
+              h.state.recipientUpdates.push(patch)
+              return { eq: () => Promise.resolve({ error: null }) }
+            },
+          }
+        case 'contacts':
+          // Three chains land here, all from findOrCreateContact:
+          //   findContactByWaUserId: select('*').eq().eq().maybeSingle()
+          //   identity backfill:     update().eq().select().maybeSingle()
+          //   create:                insert().select().single()
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: () =>
+                    Promise.resolve({
+                      data: h.state.contactByWaUserId,
+                      error: null,
+                    }),
+                }),
+              }),
+            }),
+            update: (patch: Record<string, unknown>) => {
+              h.state.contactUpdates.push(patch)
+              return {
+                eq: () => ({
+                  select: () => ({
+                    maybeSingle: () =>
+                      Promise.resolve({ data: null, error: null }),
+                  }),
+                }),
+              }
+            },
+            insert: (row: Record<string, unknown>) => {
+              h.state.contactInserts.push(row)
+              return {
+                select: () => ({
+                  single: () =>
+                    Promise.resolve({
+                      data: { id: 'contact-new', ...row },
+                      error: null,
+                    }),
+                }),
+              }
+            },
           }
         case 'messages':
           return {
@@ -113,6 +179,7 @@ vi.mock('@supabase/supabase-js', () => ({
                     }),
                   }
                 : // lookupInternalIdByMetaId: select('id').eq().eq().maybeSingle()
+                  // handleStatusUpdate fan-out: select().eq().limit().maybeSingle()
                   {
                     eq: () => ({
                       eq: () => ({
@@ -122,8 +189,17 @@ vi.mock('@supabase/supabase-js', () => ({
                             error: null,
                           }),
                       }),
+                      limit: () => ({
+                        maybeSingle: () =>
+                          Promise.resolve({ data: null, error: null }),
+                      }),
                     }),
                   },
+            // Status webhook mirror (#535): update(...).eq('message_id', ...)
+            update: (patch: Record<string, unknown>) => {
+              h.state.messageUpdates.push(patch)
+              return { eq: () => Promise.resolve({ error: null }) }
+            },
             // Idempotent insert: upsert(...).select('id')
             upsert: (row: Record<string, unknown>, options: unknown) => {
               h.state.upsertCalls.push({ row, options })
@@ -182,15 +258,18 @@ vi.mock('@/lib/contacts/dedupe', () => ({
   })),
   isUniqueViolation: () => false,
 }))
+
 vi.mock('@/lib/whatsapp/webhook-signature', () => ({
   verifyMetaWebhookSignature: () => true,
 }))
 vi.mock('@/lib/whatsapp/template-webhook', () => ({
-  isTemplateWebhookField: () => false,
+  isTemplateWebhookField: (field: string) =>
+    field.startsWith('message_template_'),
   handleTemplateWebhookChange: vi.fn(),
 }))
 vi.mock('@/lib/automations/engine', () => ({
   runAutomationsForTrigger: h.runAutomationsForTrigger,
+  resumeAwaitingReply: h.resumeAwaitingReply,
 }))
 vi.mock('@/lib/flows/engine', () => ({
   dispatchInboundToFlows: h.dispatchInboundToFlows,
@@ -204,9 +283,13 @@ vi.mock('@/lib/webhooks/deliver', () => ({
 
 import { POST } from './route'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
+import { findExistingContact } from '@/lib/contacts/dedupe'
+import { handleTemplateWebhookChange } from '@/lib/whatsapp/template-webhook'
+import { MAX_WEBHOOK_BODY_BYTES } from '@/lib/whatsapp/webhook-body'
 
 const mockGetMediaUrl = vi.mocked(getMediaUrl)
 const mockDownloadMedia = vi.mocked(downloadMedia)
+const mockFindExistingContact = vi.mocked(findExistingContact)
 
 const TEXT_MESSAGE = {
   id: 'wamid.TEST1',
@@ -216,7 +299,20 @@ const TEXT_MESSAGE = {
   text: { body: 'hello' },
 }
 
-function inboundRequest(message: Record<string, unknown> = TEXT_MESSAGE) {
+const LEGACY_CONTACTS = [{ wa_id: '15551230000', profile: { name: 'Ada' } }]
+
+function signedPost(body: BodyInit) {
+  return new Request('http://localhost/api/whatsapp/webhook', {
+    method: 'POST',
+    headers: { 'x-hub-signature-256': 'sha256=stub' },
+    body,
+  })
+}
+
+function inboundRequest(
+  message: Record<string, unknown> = TEXT_MESSAGE,
+  contacts: Record<string, unknown>[] = LEGACY_CONTACTS,
+) {
   const body = {
     entry: [
       {
@@ -225,7 +321,7 @@ function inboundRequest(message: Record<string, unknown> = TEXT_MESSAGE) {
             field: 'messages',
             value: {
               metadata: { phone_number_id: 'pn-1' },
-              contacts: [{ wa_id: '15551230000', profile: { name: 'Ada' } }],
+              contacts,
               messages: [message],
             },
           },
@@ -233,15 +329,37 @@ function inboundRequest(message: Record<string, unknown> = TEXT_MESSAGE) {
       },
     ],
   }
-  return {
-    text: async () => JSON.stringify(body),
-    headers: { get: () => 'sha256=stub' },
-  } as unknown as Request
+  return signedPost(JSON.stringify(body))
 }
 
-async function runWebhook(message?: Record<string, unknown>) {
-  const res = await POST(inboundRequest(message))
+async function runWebhook(
+  message?: Record<string, unknown>,
+  contacts?: Record<string, unknown>[],
+) {
+  const res = await POST(inboundRequest(message, contacts))
   // Drain the after() callback exactly as the runtime would.
+  for (const cb of h.state.afterCallbacks) await cb()
+  return res
+}
+
+/** A message-status webhook (sent / delivered / read / failed). */
+async function runStatusWebhook(status: Record<string, unknown>) {
+  const body = {
+    entry: [
+      {
+        changes: [
+          {
+            field: 'messages',
+            value: {
+              metadata: { phone_number_id: 'pn-1' },
+              statuses: [status],
+            },
+          },
+        ],
+      },
+    ],
+  }
+  const res = await POST(signedPost(JSON.stringify(body)))
   for (const cb of h.state.afterCallbacks) await cb()
   return res
 }
@@ -260,6 +378,17 @@ beforeEach(() => {
   h.state.mirrorInboundMedia = true
   h.state.storageUploads = []
   h.state.storageUploadError = null
+  h.state.contactByWaUserId = null
+  h.state.contactInserts = []
+  h.state.contactUpdates = []
+  h.state.messageUpdates = []
+  h.state.broadcastRecipient = null
+  h.state.recipientUpdates = []
+  mockFindExistingContact.mockResolvedValue({
+    id: 'contact-1',
+    name: 'Ada',
+    phone: '15551230000',
+  })
   mockGetMediaUrl.mockResolvedValue({
     url: 'https://lookaside.fbsbx.com/whatsapp/abc',
     mimeType: 'image/jpeg',
@@ -270,6 +399,7 @@ beforeEach(() => {
     contentType: 'image/jpeg',
   })
   h.dispatchInboundToFlows.mockResolvedValue({ consumed: false })
+  h.resumeAwaitingReply.mockResolvedValue(false)
   h.dispatchInboundToAiReply.mockResolvedValue(undefined)
   h.dispatchWebhookEvent.mockResolvedValue(undefined)
   h.runAutomationsForTrigger.mockImplementation(() => {
@@ -536,5 +666,421 @@ describe('inbound webhook: after() awaits automations (#368)', () => {
     // If the dispatches were fire-and-forget, completed would still be 0
     // here — the callback would have resolved before the timers fired.
     expect(h.state.automationCompleted).toBe(3)
+  })
+})
+
+// ============================================================
+// Business-scoped user IDs (issue #519)
+//
+// Meta stopped sending the phone number for a customer who has adopted
+// a WhatsApp username: `messages[].from` and `contacts[].wa_id` are
+// both absent, and only `from_user_id` / `user_id` identify them.
+//
+// Before the fix, `normalizePhone(undefined)` gave '', which
+// `findExistingContact` refuses to look up, so every such delivery
+// inserted a NEW contact — and migration 022's unique index is partial
+// (`WHERE phone_normalized <> ''`) so nothing stopped it. One contact
+// and one conversation per inbound message.
+// ============================================================
+
+const USERNAME_ONLY_MESSAGE = {
+  id: 'wamid.BSUID1',
+  from_user_id: 'US.13491208655302741918',
+  from_parent_user_id: 'US.ENT.11815799212886844830',
+  timestamp: '1700000000',
+  type: 'text',
+  text: { body: 'does it come in another color?' },
+}
+
+const USERNAME_ONLY_CONTACTS = [
+  {
+    profile: { name: 'Sheena Nelson', username: 'realsheenanelson' },
+    user_id: 'US.13491208655302741918',
+    parent_user_id: 'US.ENT.11815799212886844830',
+  },
+]
+
+describe('inbound webhook: business-scoped user IDs (#519)', () => {
+  it('creates ONE contact keyed on the BSUID when Meta sends no phone', async () => {
+    // Nothing on file under either key yet.
+    h.state.contactByWaUserId = null
+    mockFindExistingContact.mockResolvedValue(null)
+
+    await runWebhook(USERNAME_ONLY_MESSAGE, USERNAME_ONLY_CONTACTS)
+
+    expect(h.state.contactInserts).toHaveLength(1)
+    expect(h.state.contactInserts[0]).toMatchObject({
+      account_id: 'acc-1',
+      phone: '',
+      wa_user_id: 'US.13491208655302741918',
+      wa_parent_user_id: 'US.ENT.11815799212886844830',
+      wa_username: 'realsheenanelson',
+      name: 'Sheena Nelson',
+    })
+    // The message still lands in the thread.
+    expect(h.state.upsertCalls).toHaveLength(1)
+  })
+
+  it('never looks the sender up by phone when there is no phone', async () => {
+    h.state.contactByWaUserId = null
+    mockFindExistingContact.mockResolvedValue(null)
+
+    await runWebhook(USERNAME_ONLY_MESSAGE, USERNAME_ONLY_CONTACTS)
+
+    // The old code called this with '' and got null every time, which
+    // is exactly how the duplicate contacts got created.
+    expect(mockFindExistingContact).not.toHaveBeenCalled()
+  })
+
+  it('reuses the existing contact on the SECOND message from the same BSUID', async () => {
+    // The row the first message created.
+    h.state.contactByWaUserId = {
+      id: 'contact-bsuid',
+      name: 'Sheena Nelson',
+      phone: '',
+      wa_user_id: 'US.13491208655302741918',
+      wa_parent_user_id: 'US.ENT.11815799212886844830',
+      wa_username: 'realsheenanelson',
+    }
+    mockFindExistingContact.mockResolvedValue(null)
+
+    await runWebhook(
+      { ...USERNAME_ONLY_MESSAGE, id: 'wamid.BSUID2' },
+      USERNAME_ONLY_CONTACTS,
+    )
+
+    expect(h.state.contactInserts).toHaveLength(0)
+    // Nothing about the identity changed, so no pointless UPDATE either.
+    expect(h.state.contactUpdates).toHaveLength(0)
+  })
+
+  it('backfills the BSUID onto a contact we already knew by phone', async () => {
+    // Transition payload: Meta sends both keys. We match on the phone
+    // and stamp the BSUID so the next phone-less message still finds
+    // this row instead of forking a new one.
+    mockFindExistingContact.mockResolvedValue({
+      id: 'contact-1',
+      name: 'Pablo',
+      phone: '16505551234',
+    })
+
+    await runWebhook(
+      {
+        id: 'wamid.BOTH',
+        from: '16505551234',
+        from_user_id: 'US.13491208655302741918',
+        timestamp: '1700000000',
+        type: 'text',
+        text: { body: 'hi' },
+      },
+      [
+        {
+          profile: { name: 'Pablo', username: 'pablomorales' },
+          wa_id: '16505551234',
+          user_id: 'US.13491208655302741918',
+        },
+      ],
+    )
+
+    expect(h.state.contactInserts).toHaveLength(0)
+    expect(h.state.contactUpdates).toHaveLength(1)
+    expect(h.state.contactUpdates[0]).toMatchObject({
+      wa_user_id: 'US.13491208655302741918',
+      wa_username: 'pablomorales',
+    })
+    // The number we already had is left alone.
+    expect(h.state.contactUpdates[0]).not.toHaveProperty('phone')
+  })
+
+  it('fills in the phone once Meta finally discloses it', async () => {
+    h.state.contactByWaUserId = {
+      id: 'contact-bsuid',
+      name: 'Sheena Nelson',
+      phone: '',
+      wa_user_id: 'US.13491208655302741918',
+      wa_username: 'realsheenanelson',
+    }
+
+    await runWebhook(
+      {
+        ...USERNAME_ONLY_MESSAGE,
+        id: 'wamid.BSUID3',
+        from: '16505551234',
+      },
+      USERNAME_ONLY_CONTACTS,
+    )
+
+    expect(h.state.contactUpdates).toHaveLength(1)
+    expect(h.state.contactUpdates[0]).toMatchObject({ phone: '16505551234' })
+  })
+
+  it('drops a delivery that carries neither key rather than inventing a contact', async () => {
+    mockFindExistingContact.mockResolvedValue(null)
+
+    const res = await runWebhook(
+      {
+        id: 'wamid.ANON',
+        timestamp: '1700000000',
+        type: 'text',
+        text: { body: 'who am i' },
+      },
+      [{ profile: { name: 'Nobody' } }],
+    )
+
+    expect(h.state.contactInserts).toHaveLength(0)
+    expect(h.state.upsertCalls).toHaveLength(0)
+    // Still a 200 — Meta must not be told to retry a payload we can
+    // never process.
+    expect(
+      (res as unknown as { init?: { status?: number } }).init?.status,
+    ).toBe(200)
+  })
+
+  it('leaves the legacy phone-only payload behaving exactly as before', async () => {
+    await runWebhook()
+
+    expect(mockFindExistingContact).toHaveBeenCalledWith(
+      expect.anything(),
+      'acc-1',
+      '15551230000',
+    )
+    expect(h.state.contactInserts).toHaveLength(0)
+    expect(h.state.contactUpdates).toHaveLength(0)
+    expect(h.state.upsertCalls).toHaveLength(1)
+  })
+})
+
+describe('inbound webhook: contact name backfill (#519 regression guard)', () => {
+  it('never overwrites an edited name with the phone number', async () => {
+    // Meta sends no profile name. The display fallback would resolve to
+    // the phone number, and writing that back would replace whatever an
+    // agent typed on the contact — on every single inbound message.
+    mockFindExistingContact.mockResolvedValue({
+      id: 'contact-1',
+      name: 'Ada (VIP, calls Mondays)',
+      phone: '15551230000',
+    })
+
+    await runWebhook(TEXT_MESSAGE, [{ wa_id: '15551230000', profile: {} }])
+
+    expect(h.state.contactUpdates).toHaveLength(0)
+  })
+
+  it('does adopt a username when that is all Meta gives us', async () => {
+    mockFindExistingContact.mockResolvedValue({
+      id: 'contact-1',
+      name: '15551230000',
+      phone: '15551230000',
+    })
+
+    await runWebhook(TEXT_MESSAGE, [
+      { wa_id: '15551230000', profile: { username: 'ada' } },
+    ])
+
+    expect(h.state.contactUpdates[0]).toMatchObject({ name: 'ada' })
+  })
+})
+
+describe('template-lifecycle webhooks: WABA id is threaded to the handler (#534)', () => {
+  it('passes entry.id as wabaId so an unknown template can be stubbed for the right account', async () => {
+    const value = {
+      event: 'APPROVED',
+      message_template_id: '4242',
+      message_template_name: 'created_in_meta',
+      message_template_language: 'en_US',
+    }
+    const body = {
+      entry: [
+        {
+          id: 'WABA-1',
+          changes: [{ field: 'message_template_status_update', value }],
+        },
+      ],
+    }
+    const req = signedPost(JSON.stringify(body))
+
+    await POST(req)
+    for (const cb of h.state.afterCallbacks) await cb()
+
+    const mockHandle = vi.mocked(handleTemplateWebhookChange)
+    expect(mockHandle).toHaveBeenCalledTimes(1)
+    expect(mockHandle.mock.calls[0][0]).toEqual({
+      field: 'message_template_status_update',
+      value,
+      wabaId: 'WABA-1',
+    })
+    // A template event must not fall through to the messaging branch.
+    expect(h.state.upsertCalls).toHaveLength(0)
+  })
+})
+
+describe('status webhook: failed statuses keep Meta\'s reason (#535)', () => {
+  const FAILED_STATUS = {
+    id: 'wamid.OUT1',
+    status: 'failed',
+    timestamp: '1700000100',
+    recipient_id: '15551230000',
+    errors: [
+      {
+        code: 131049,
+        title: 'This message was not delivered to maintain healthy ecosystem engagement.',
+        message: 'This message was not delivered to maintain healthy ecosystem engagement.',
+        error_data: {
+          details:
+            'In order to maintain a healthy ecosystem engagement, the message failed to be delivered.',
+        },
+        href: 'https://developers.facebook.com/docs/whatsapp/cloud-api/support/error-codes/',
+      },
+    ],
+  }
+
+  it('persists code, title and details on the messages row in the same update as status', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      await runStatusWebhook(FAILED_STATUS)
+    } finally {
+      warn.mockRestore()
+    }
+
+    expect(h.state.messageUpdates).toHaveLength(1)
+    expect(h.state.messageUpdates[0]).toEqual({
+      status: 'failed',
+      error_code: 131049,
+      error_title: FAILED_STATUS.errors[0].title,
+      error_details: FAILED_STATUS.errors[0].error_data.details,
+    })
+  })
+
+  it('logs one warning line carrying the wamid, code and title', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      await runStatusWebhook(FAILED_STATUS)
+      expect(warn).toHaveBeenCalledTimes(1)
+      const line = String(warn.mock.calls[0][0])
+      expect(line).toContain('wamid.OUT1')
+      expect(line).toContain('131049')
+      expect(line).toContain(FAILED_STATUS.errors[0].title)
+      expect(line).toContain(FAILED_STATUS.errors[0].error_data.details)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('folds the reason into broadcast_recipients.error_message', async () => {
+    h.state.broadcastRecipient = { id: 'rec-1', status: 'sent' }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      await runStatusWebhook(FAILED_STATUS)
+    } finally {
+      warn.mockRestore()
+    }
+
+    expect(h.state.recipientUpdates).toHaveLength(1)
+    expect(h.state.recipientUpdates[0].status).toBe('failed')
+    const reason = String(h.state.recipientUpdates[0].error_message)
+    expect(reason).toContain('131049')
+    expect(reason).toContain(FAILED_STATUS.errors[0].title)
+    expect(reason).toContain(FAILED_STATUS.errors[0].error_data.details)
+  })
+
+  it('a failed status with no errors array still flips status and stores no reason', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      await runStatusWebhook({ ...FAILED_STATUS, errors: undefined })
+    } finally {
+      warn.mockRestore()
+    }
+    expect(warn).not.toHaveBeenCalled()
+    expect(h.state.messageUpdates).toEqual([{ status: 'failed' }])
+  })
+
+  it('a plain delivered status updates only status — error columns untouched', async () => {
+    h.state.broadcastRecipient = { id: 'rec-1', status: 'sent' }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      await runStatusWebhook({
+        id: 'wamid.OUT1',
+        status: 'delivered',
+        timestamp: '1700000100',
+        recipient_id: '15551230000',
+      })
+    } finally {
+      warn.mockRestore()
+    }
+
+    expect(warn).not.toHaveBeenCalled()
+    expect(h.state.messageUpdates).toEqual([{ status: 'delivered' }])
+    expect(h.state.recipientUpdates).toHaveLength(1)
+    expect(h.state.recipientUpdates[0]).not.toHaveProperty('error_message')
+    expect(h.state.recipientUpdates[0]).not.toHaveProperty('error_code')
+  })
+})
+
+describe('inbound webhook: automation waiting for a reply', () => {
+  const triggersFired = () =>
+    h.runAutomationsForTrigger.mock.calls.map(
+      (call) => (call[0] as { triggerType: string }).triggerType,
+    )
+
+  it('offers the message to a waiting automation before any trigger fires', async () => {
+    await runWebhook()
+
+    expect(h.resumeAwaitingReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({ message_text: 'hello' }),
+      }),
+    )
+    // Nothing was waiting, so the content triggers fire as normal.
+    expect(triggersFired()).toEqual(
+      expect.arrayContaining(['new_message_received', 'keyword_match']),
+    )
+  })
+
+  it('suppresses content triggers and AI reply when a waiting automation took it', async () => {
+    h.resumeAwaitingReply.mockResolvedValue(true)
+
+    await runWebhook()
+
+    expect(triggersFired()).not.toContain('new_message_received')
+    expect(triggersFired()).not.toContain('keyword_match')
+    expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
+  })
+
+  it('leaves the message to a flow that consumed it', async () => {
+    h.dispatchInboundToFlows.mockResolvedValue({ consumed: true })
+
+    await runWebhook()
+
+    expect(h.resumeAwaitingReply).not.toHaveBeenCalled()
+  })
+})
+
+describe('inbound webhook: oversized body cap', () => {
+  it('answers 413 for a body over the cap and schedules no processing', async () => {
+    const before = h.state.afterCallbacks.length
+    const res = (await POST(signedPost('x'.repeat(MAX_WEBHOOK_BODY_BYTES + 1)))) as unknown as {
+      init?: { status?: number }
+    }
+    expect(res.init?.status).toBe(413)
+    expect(h.state.afterCallbacks).toHaveLength(before)
+  })
+
+  it('answers 413 from the declared Content-Length alone', async () => {
+    const before = h.state.afterCallbacks.length
+    const req = new Request('http://localhost/api/whatsapp/webhook', {
+      method: 'POST',
+      headers: { 'content-length': String(MAX_WEBHOOK_BODY_BYTES + 1), 'x-hub-signature-256': 'sha256=stub' },
+      body: '{}',
+    })
+    const res = (await POST(req)) as unknown as { init?: { status?: number } }
+    expect(res.init?.status).toBe(413)
+    expect(h.state.afterCallbacks).toHaveLength(before)
+  })
+
+  it('lets a body at the cap through to JSON parsing', async () => {
+    const res = (await POST(signedPost('x'.repeat(MAX_WEBHOOK_BODY_BYTES)))) as unknown as {
+      init?: { status?: number }
+    }
+    expect(res.init?.status).toBe(400)
   })
 })

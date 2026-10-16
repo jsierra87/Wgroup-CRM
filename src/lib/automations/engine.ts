@@ -24,6 +24,10 @@ import { MAX_TAG_CHAIN_DEPTH, getTagChainDepth } from '@/lib/contacts/tag-chain'
 import { engineSendText, engineSendTemplate, engineSendInteractive } from './meta-send'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
+import { getT } from '@/lib/i18n/translate'
+
+/** Step errors land in automation_logs and are shown on the logs page. */
+const tErr = getT('LibErrors.engine')
 
 // ------------------------------------------------------------
 // Public API
@@ -92,6 +96,32 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
       }
     }
 
+    // Same argument for `context.conversation_id` (GHSA-m4fx-g6pr-hrw8).
+    // It rides in on the same caller-supplied body, and every send step
+    // writes a `messages` row and a `conversations` preview update keyed
+    // on it through the service-role client — so an unvalidated id let a
+    // caller inject a message into another tenant's conversation. Refuse
+    // the same way: silently, with no existence oracle.
+    if (input.context?.conversation_id) {
+      const { data: conv, error: convErr } = await db
+        .from('conversations')
+        .select('id')
+        .eq('id', input.context.conversation_id)
+        .eq('account_id', input.accountId)
+        .maybeSingle()
+      if (convErr) {
+        console.error('[automations] conversation ownership check failed:', convErr)
+        return
+      }
+      if (!conv) {
+        console.warn(
+          '[automations] conversation not in account, refusing dispatch',
+          input.context.conversation_id,
+        )
+        return
+      }
+    }
+
     const { data: automations, error } = await db
       .from('automations')
       .select('*')
@@ -152,7 +182,7 @@ export async function resumePendingExecution(pending: {
   }
 
   try {
-    await executeStepsFrom({
+    await runResumed({
       automation: automation as Automation,
       contactId: pending.contact_id,
       context: pending.context ?? {},
@@ -167,6 +197,145 @@ export async function resumePendingExecution(pending: {
     console.error('[automations] resume failed:', err)
     await markPending(pending.id, 'failed')
   }
+}
+
+/** How long a `wait_for_reply` step waits: WhatsApp's 24h service window. */
+export const REPLY_WAIT_MS = 24 * 60 * 60 * 1000
+
+export interface AwaitingReplyInput {
+  accountId: string
+  contactId: string
+  /** The inbound that may be the reply. Overwrites the parked run's
+   *  message fields so the steps after the wait see the reply. */
+  context: Pick<AutomationContext, 'message_text' | 'conversation_id' | 'interactive_reply_id'>
+}
+
+/**
+ * Hand an inbound message to the contact's automation run that is parked
+ * at a `wait_for_reply` step, if there is one.
+ *
+ * Returns true when a parked run took the message — the caller then
+ * skips the content triggers (`new_message_received`, `keyword_match`,
+ * `interactive_reply`) and AI auto-reply for it, the same way a Flow
+ * consuming a message suppresses them.
+ *
+ * Must never throw — it runs inside the webhook's `after()` block.
+ */
+export async function resumeAwaitingReply(input: AwaitingReplyInput): Promise<boolean> {
+  let claimedId: string | null = null
+  try {
+    const db = supabaseAdmin()
+    // Newest first; a park supersedes older waits, so normally there is
+    // at most one. The deadline is checked here rather than trusted to
+    // the cron sweep, so an expired wait is never resumed even when the
+    // cron isn't running.
+    const { data: rows, error } = await db
+      .from('automation_pending_executions')
+      .select('*')
+      .eq('account_id', input.accountId)
+      .eq('contact_id', input.contactId)
+      .eq('status', 'awaiting_reply')
+      .gt('run_at', new Date().toISOString())
+      .order('created_at', { ascending: false })
+      .limit(1)
+    if (error) {
+      console.error('[automations] awaiting-reply lookup failed:', error)
+      return false
+    }
+    const pending = rows?.[0] as PendingRow | undefined
+    if (!pending) return false
+
+    // Claim it. Gated on the CURRENT status so two deliveries racing on
+    // the same parked run can't both resume it.
+    const { data: claim } = await db
+      .from('automation_pending_executions')
+      .update({ status: 'running' })
+      .eq('id', pending.id)
+      .eq('status', 'awaiting_reply')
+      .select('id')
+      .maybeSingle()
+    if (!claim) return false
+    claimedId = pending.id
+
+    const { data: automation } = await db
+      .from('automations')
+      .select('*')
+      .eq('id', pending.automation_id)
+      .eq('account_id', input.accountId)
+      .maybeSingle()
+    if (!automation || !(automation as Automation).is_active) {
+      // Paused or deleted while waiting: drop the wait and let the
+      // message go through the normal triggers instead.
+      await markPending(pending.id, 'expired')
+      await setLogError(pending.log_id, tErr('pausedWhileWaitingForReply'))
+      return false
+    }
+
+    await runResumed({
+      automation: automation as Automation,
+      contactId: pending.contact_id,
+      context: {
+        ...(pending.context ?? {}),
+        // Always overwrite all three, so a typed reply can't inherit a
+        // stale tap id from the message that started the run.
+        message_text: input.context.message_text ?? '',
+        conversation_id: input.context.conversation_id,
+        interactive_reply_id: input.context.interactive_reply_id,
+      },
+      parentStepId: pending.parent_step_id,
+      branch: pending.branch,
+      startPosition: pending.next_step_position,
+      logId: pending.log_id,
+      triggerEvent: 'resumed_reply',
+    })
+    await markPending(pending.id, 'done')
+    return true
+  } catch (err) {
+    console.error('[automations] awaiting-reply resume failed:', err)
+    if (claimedId) {
+      // The message was already taken by the claim; report it consumed so
+      // it doesn't ALSO fan out to other automations.
+      await markPending(claimedId, 'failed').catch(() => {})
+      return true
+    }
+    return false
+  }
+}
+
+/**
+ * Close out `wait_for_reply` runs whose 24h deadline passed with no
+ * reply. Called from the automations cron. Nothing is sent to the
+ * customer; the log stays `partial` with an explanatory error_message.
+ * Returns how many runs expired.
+ */
+export async function expireAwaitingReplies(now: Date = new Date()): Promise<number> {
+  const db = supabaseAdmin()
+  const { data, error } = await db
+    .from('automation_pending_executions')
+    .update({ status: 'expired' })
+    .eq('status', 'awaiting_reply')
+    .lte('run_at', now.toISOString())
+    .select('id, log_id')
+  if (error) {
+    console.error('[automations] expire awaiting replies failed:', error)
+    return 0
+  }
+  const rows = (data ?? []) as { id: string; log_id: string | null }[]
+  for (const row of rows) {
+    await setLogError(row.log_id, tErr('noReplyWithin24h'))
+  }
+  return rows.length
+}
+
+interface PendingRow {
+  id: string
+  automation_id: string
+  contact_id: string | null
+  log_id: string | null
+  parent_step_id: string | null
+  branch: 'yes' | 'no' | null
+  next_step_position: number
+  context: AutomationContext | null
 }
 
 // ------------------------------------------------------------
@@ -241,7 +410,14 @@ interface ExecuteArgs {
   triggerEvent: string
 }
 
-async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
+/**
+ * How a scope ended. `suspended` means a `wait` / `wait_for_reply` step
+ * parked the run: every enclosing scope must stop too, or the steps
+ * after a condition would run before the branch's own remaining steps.
+ */
+type ScopeOutcome = 'completed' | 'suspended' | 'failed'
+
+async function executeStepsFrom(args: ExecuteArgs): Promise<ScopeOutcome> {
   const db = supabaseAdmin()
 
   const baseQuery = db
@@ -260,13 +436,13 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
 
   if (stepsErr) {
     await finalizeLog(args.logId, 'failed', stepsErr.message)
-    return
+    return 'failed'
   }
   if (!steps || steps.length === 0) {
     if (args.parentStepId === null && args.logId) {
       await finalizeLog(args.logId, 'success', null)
     }
-    return
+    return 'completed'
   }
 
   const results: AutomationLogStepResult[] = []
@@ -299,9 +475,7 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
         status: 'success',
         detail: `waiting ${cfg.amount} ${cfg.unit}`,
       })
-      status = 'partial'
-      await appendResults(args.logId, results, status, errorMessage)
-      return
+      return suspend(args, results, errorMessage)
     }
 
     try {
@@ -316,17 +490,37 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
         })
         // Recurse into the chosen branch at position 0 (children use their
         // own ordering within the branch scope).
-        await executeStepsFrom({
+        const branchOutcome = await executeStepsFrom({
           ...args,
           parentStepId: step.id,
           branch: taken ? 'yes' : 'no',
           startPosition: 0,
           logId: args.logId,
         })
+        // The branch parked: stop here too. The steps after this
+        // condition run when the branch resumes and climbs back out
+        // (see runResumed).
+        if (branchOutcome === 'suspended') {
+          return suspend(args, results, errorMessage)
+        }
+        if (branchOutcome === 'failed') {
+          status = 'failed'
+          break
+        }
         continue
       }
 
       const detail = await runStep(step, args)
+      if (waitsForReply(step)) {
+        await parkForReply(step, args)
+        results.push({
+          step_id: step.id,
+          step_type: step.step_type,
+          status: 'success',
+          detail: `${detail}; waiting for reply`,
+        })
+        return suspend(args, results, errorMessage)
+      }
       results.push({
         step_id: step.id,
         step_type: step.step_type,
@@ -353,6 +547,101 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
     // Nested branch — just append results; parent scope decides final status.
     await appendResults(args.logId, results, null, errorMessage)
   }
+  return status === 'failed' ? 'failed' : 'completed'
+}
+
+/** Record a parked scope's results and report the suspension upward. */
+async function suspend(
+  args: ExecuteArgs,
+  results: AutomationLogStepResult[],
+  errorMessage: string | null,
+): Promise<ScopeOutcome> {
+  // Only the outermost scope owns the log status (same rule as below).
+  await appendResults(
+    args.logId,
+    results,
+    args.parentStepId === null ? 'partial' : null,
+    errorMessage,
+  )
+  return 'suspended'
+}
+
+/**
+ * Continue a parked run, then climb out of every enclosing condition
+ * branch. A run can park inside a branch; once that branch's remaining
+ * steps finish, execution has to carry on after the condition that owns
+ * it, in the condition's own scope, all the way back to the root.
+ */
+async function runResumed(args: ExecuteArgs): Promise<void> {
+  const db = supabaseAdmin()
+  let outcome = await executeStepsFrom(args)
+  let owner = args.parentStepId
+
+  while (outcome === 'completed' && owner !== null) {
+    const { data: cond } = await db
+      .from('automation_steps')
+      .select('id, parent_step_id, branch, position')
+      .eq('id', owner)
+      .eq('automation_id', args.automation.id)
+      .maybeSingle()
+    if (!cond) {
+      // The condition was deleted while the run was parked — nothing
+      // left to climb into. What did run, ran successfully.
+      await setLogStatus(args.logId, 'success')
+      return
+    }
+    const c = cond as Pick<AutomationStep, 'parent_step_id' | 'branch' | 'position'>
+    owner = c.parent_step_id ?? null
+    outcome = await executeStepsFrom({
+      ...args,
+      parentStepId: owner,
+      branch: c.branch ?? null,
+      startPosition: c.position + 1,
+    })
+  }
+
+  // A nested scope never sets the log status itself, so a failure there
+  // has to be promoted here or the log stays `partial` forever.
+  if (outcome === 'failed' && owner !== null) {
+    await setLogStatus(args.logId, 'failed')
+  }
+}
+
+function waitsForReply(step: AutomationStep): boolean {
+  if (step.step_type !== 'send_buttons' && step.step_type !== 'send_list') return false
+  return (step.step_config as SendButtonsStepConfig).wait_for_reply === true
+}
+
+/**
+ * Park the run after an interactive send until the contact replies.
+ * The newest menu wins: any other run already waiting on this contact
+ * is superseded, so a reply can never resume a stale menu.
+ */
+async function parkForReply(step: AutomationStep, args: ExecuteArgs): Promise<void> {
+  if (!args.contactId) throw new Error(tErr('needsContact', { step: step.step_type }))
+  const db = supabaseAdmin()
+  const { error: supErr } = await db
+    .from('automation_pending_executions')
+    .update({ status: 'superseded' })
+    .eq('account_id', args.automation.account_id)
+    .eq('contact_id', args.contactId)
+    .eq('status', 'awaiting_reply')
+  if (supErr) throw new Error(tErr('parkForReplyFailed', { message: supErr.message }))
+  const { error } = await db.from('automation_pending_executions').insert({
+    automation_id: args.automation.id,
+    account_id: args.automation.account_id,
+    user_id: args.automation.user_id,
+    contact_id: args.contactId,
+    log_id: args.logId,
+    parent_step_id: args.parentStepId,
+    branch: args.branch,
+    next_step_position: step.position + 1,
+    context: args.context,
+    // For awaiting_reply rows run_at is the reply deadline (migration 045).
+    run_at: new Date(Date.now() + REPLY_WAIT_MS).toISOString(),
+    status: 'awaiting_reply',
+  })
+  if (error) throw new Error(tErr('parkForReplyFailed', { message: error.message }))
 }
 
 async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string> {
@@ -361,9 +650,9 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
   switch (step.step_type) {
     case 'send_message': {
       const cfg = step.step_config as SendMessageStepConfig
-      if (!args.contactId) throw new Error('send_message needs a contact')
+      if (!args.contactId) throw new Error(tErr('needsContact', { step: 'send_message' }))
       const text = interpolate(cfg.text, args)
-      if (!text.trim()) throw new Error('send_message has empty text')
+      if (!text.trim()) throw new Error(tErr('emptyText'))
       const conversationId = await resolveConversationId(args)
       const { whatsapp_message_id } = await engineSendText({
         accountId: args.automation.account_id,
@@ -378,7 +667,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
     case 'send_buttons':
     case 'send_list': {
       const payload = step.step_config as SendButtonsStepConfig | SendListStepConfig
-      if (!args.contactId) throw new Error(`${step.step_type} needs a contact`)
+      if (!args.contactId) throw new Error(tErr('needsContact', { step: step.step_type }))
       // Validate against Meta's limits before the network call so a bad
       // payload surfaces as a clear failed-step detail rather than a raw
       // Meta 400 mid-conversation.
@@ -397,8 +686,8 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
 
     case 'send_template': {
       const cfg = step.step_config as SendTemplateStepConfig
-      if (!args.contactId) throw new Error('send_template needs a contact')
-      if (!cfg.template_name) throw new Error('send_template needs template_name')
+      if (!args.contactId) throw new Error(tErr('needsContact', { step: 'send_template' }))
+      if (!cfg.template_name) throw new Error(tErr('needsTemplateName'))
       const conversationId = await resolveConversationId(args)
       // Meta templates use positional {{1}}, {{2}}, … placeholders, so
       // we MUST emit params in strict numeric order. Lexicographic sort
@@ -432,7 +721,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
 
     case 'add_tag': {
       const cfg = step.step_config as TagStepConfig
-      if (!args.contactId || !cfg.tag_id) throw new Error('add_tag needs contact + tag_id')
+      if (!args.contactId || !cfg.tag_id) throw new Error(tErr('needsContactAndTag', { step: 'add_tag' }))
       const added = await addContactTagIfAbsent(db, {
         accountId: args.automation.account_id,
         contactId: args.contactId,
@@ -471,7 +760,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       // See add_tag: tenant scoping relies on the runAutomationsForTrigger
       // ownership guard, since contact_tags carries no account_id.
       const cfg = step.step_config as TagStepConfig
-      if (!args.contactId || !cfg.tag_id) throw new Error('remove_tag needs contact + tag_id')
+      if (!args.contactId || !cfg.tag_id) throw new Error(tErr('needsContactAndTag', { step: 'remove_tag' }))
       await db
         .from('contact_tags')
         .delete()
@@ -482,7 +771,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
 
     case 'assign_conversation': {
       const cfg = step.step_config as AssignConversationStepConfig
-      if (!args.contactId) throw new Error('assign_conversation needs a contact')
+      if (!args.contactId) throw new Error(tErr('needsContact', { step: 'assign_conversation' }))
       let agentId = cfg.agent_id
       if (cfg.mode === 'round_robin') {
         // Pick any member of the account. The existing implementation
@@ -506,7 +795,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
 
     case 'update_contact_field': {
       const cfg = step.step_config as UpdateContactFieldStepConfig
-      if (!args.contactId) throw new Error('update_contact_field needs a contact')
+      if (!args.contactId) throw new Error(tErr('needsContact', { step: 'update_contact_field' }))
       // Resolve workflow variables ({{ vars.* }}, {{ message.text }}) so custom
       // values can be populated dynamically from the triggering context.
       const value = interpolate(cfg.value, args)
@@ -558,7 +847,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
 
     case 'create_deal': {
       const cfg = step.step_config as CreateDealStepConfig
-      if (!cfg.pipeline_id || !cfg.stage_id) throw new Error('create_deal needs pipeline + stage')
+      if (!cfg.pipeline_id || !cfg.stage_id) throw new Error(tErr('needsPipelineStage'))
       // Match the account's configured default currency rather than
       // the static `deals.currency` DB default — keeps automation-
       // created deals consistent with the one-currency-per-account
@@ -586,13 +875,13 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
 
     case 'send_webhook': {
       const cfg = step.step_config as SendWebhookStepConfig
-      if (!cfg.url) throw new Error('send_webhook needs url')
+      if (!cfg.url) throw new Error(tErr('needsUrl'))
       // SSRF guard: the URL and headers are account-controlled and the
       // server makes the request, so refuse any destination that resolves
       // to a private / loopback / link-local / reserved address. Mirrors
       // the webhook_endpoints delivery path (see lib/webhooks/deliver.ts).
       if (!(await isDeliverableUrl(cfg.url))) {
-        throw new Error('send_webhook: destination not allowed')
+        throw new Error(tErr('destinationNotAllowed'))
       }
       const body = cfg.body_template ? interpolate(cfg.body_template, args) : JSON.stringify(args.context)
       const res = await fetch(cfg.url, {
@@ -605,12 +894,12 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         redirect: 'manual',
         signal: AbortSignal.timeout(10_000),
       })
-      if (!res.ok) throw new Error(`webhook returned ${res.status}`)
+      if (!res.ok) throw new Error(tErr('webhookStatus', { status: String(res.status) }))
       return `webhook ${res.status}`
     }
 
     case 'close_conversation': {
-      if (!args.contactId) throw new Error('close_conversation needs a contact')
+      if (!args.contactId) throw new Error(tErr('needsContact', { step: 'close_conversation' }))
       await db
         .from('conversations')
         .update({ status: 'closed', updated_at: new Date().toISOString() })
@@ -637,20 +926,33 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
  */
 async function resolveConversationId(args: ExecuteArgs): Promise<string> {
   const fromCtx = args.context.conversation_id
-  if (fromCtx) return fromCtx
-  if (!args.contactId) throw new Error('cannot resolve conversation: no contact')
+  if (fromCtx) {
+    // Re-verify rather than trust the context. Dispatch already checks
+    // a caller-supplied id, but a resumed run replays a context that
+    // was persisted rows ago, and this is the last point before a
+    // service-role write keyed on it (GHSA-m4fx-g6pr-hrw8).
+    const { data, error } = await supabaseAdmin()
+      .from('conversations')
+      .select('id')
+      .eq('id', fromCtx)
+      .eq('account_id', args.automation.account_id)
+      .maybeSingle()
+    if (error) throw new Error(getT('LibErrors.send')('conversationLookupFailed', { message: error.message }))
+    if (!data?.id) throw new Error(tErr('conversationNotInAccount'))
+    return data.id as string
+  }
+  if (!args.contactId) throw new Error(tErr('noContactForConversation'))
   const { data, error } = await supabaseAdmin()
     .from('conversations')
     .select('id')
     .eq('account_id', args.automation.account_id)
     .eq('contact_id', args.contactId)
     .maybeSingle()
-  if (error) throw new Error(`conversation lookup failed: ${error.message}`)
+  if (error) throw new Error(getT('LibErrors.send')('conversationLookupFailed', { message: error.message }))
   if (!data?.id) {
-    const prefix = args.triggerEvent === 'tag_added'
-      ? 'tag_added automation cannot send'
-      : 'cannot send'
-    throw new Error(`${prefix}: contact has no existing conversation`)
+    throw new Error(
+      tErr(args.triggerEvent === 'tag_added' ? 'tagAddedNoConversation' : 'noConversation'),
+    )
   }
   return data.id as string
 }
@@ -837,7 +1139,25 @@ async function finalizeLog(
     .eq('id', logId)
 }
 
-async function markPending(id: string, status: 'done' | 'failed') {
+/** Status-only update, for when error_message must be left as it is. */
+async function setLogStatus(
+  logId: string | null,
+  status: 'success' | 'partial' | 'failed',
+) {
+  if (!logId) return
+  await supabaseAdmin().from('automation_logs').update({ status }).eq('id', logId)
+}
+
+/** Explain why a parked run ended without touching its status. */
+async function setLogError(logId: string | null, errorMessage: string) {
+  if (!logId) return
+  await supabaseAdmin()
+    .from('automation_logs')
+    .update({ error_message: errorMessage })
+    .eq('id', logId)
+}
+
+async function markPending(id: string, status: 'done' | 'failed' | 'expired') {
   await supabaseAdmin()
     .from('automation_pending_executions')
     .update({ status })

@@ -21,6 +21,9 @@
  */
 
 import { NextResponse } from 'next/server';
+import { getT } from '@/lib/i18n/translate';
+
+const t = getT('LibErrors');
 
 export interface RateLimitOptions {
   /** Max requests allowed in `windowMs`. */
@@ -97,7 +100,7 @@ export function rateLimitResponse(result: RateLimitResult): NextResponse {
   const retryAfterSec = Math.max(1, Math.ceil((result.reset - Date.now()) / 1000));
   return NextResponse.json(
     {
-      error: 'Rate limit exceeded',
+      error: t('rateLimitExceeded'),
       retry_after_seconds: retryAfterSec,
     },
     {
@@ -173,6 +176,9 @@ export const RATE_LIMITS = {
    *  capping a stampede; excess inbounds simply don't get an auto-reply
    *  (they still land in the inbox for a human). */
   aiAutoReplyAccount: { limit: 30, windowMs: 60_000 },
+  whatsappAdmin: { limit: 30, windowMs: 60_000 },
+  whatsappMedia: { limit: 240, windowMs: 60_000 },
+  automationTrigger: { limit: 30, windowMs: 60_000 },
 } as const;
 
 /** Test-only helper. Clears the in-memory state so unit tests don't
