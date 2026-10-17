@@ -88,16 +88,16 @@
 
 :root,
 html[data-mode="dark"] {
-  --background: oklch(0.115 0.008 270);
+  --background: oklch(0.095 0.008 270);
   --foreground: oklch(0.975 0.003 270);
-  --card: oklch(0.175 0.01 270);
-  --card-2: oklch(0.2 0.01 270);
+  --card: oklch(0.195 0.012 270);
+  --card-2: oklch(0.225 0.012 270);
   --card-foreground: oklch(0.975 0.003 270);
-  --popover: oklch(0.185 0.01 270);
+  --popover: oklch(0.225 0.012 270);
   --popover-foreground: oklch(0.975 0.003 270);
   --secondary: oklch(0.215 0.01 270);
   --secondary-foreground: oklch(0.975 0.003 270);
-  --muted: oklch(0.215 0.01 270);
+  --muted: oklch(0.255 0.012 270);
   --muted-foreground: oklch(0.67 0.012 270);
   --accent: oklch(0.225 0.012 270);
   --accent-foreground: oklch(0.975 0.003 270);
@@ -109,7 +109,7 @@ html[data-mode="dark"] {
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
   --radius: 0.875rem;
-  --sidebar: oklch(0.155 0.01 270);
+  --sidebar: oklch(0.175 0.012 270);
   --sidebar-foreground: oklch(0.975 0.003 270);
   --sidebar-accent: oklch(0.215 0.01 270);
   --sidebar-accent-foreground: oklch(0.975 0.003 270);
@@ -117,42 +117,52 @@ html[data-mode="dark"] {
 
   /* Depth ("3D") — a lit top edge, a lighter-to-darker surface and a
      soft drop shadow make cards read as raised panels. */
-  --surface-gradient: linear-gradient(180deg, oklch(1 0 0 / 0.035), oklch(1 0 0 / 0) 60%);
-  --surface-shadow: inset 0 1px 0 oklch(1 0 0 / 0.07), 0 0 0 1px oklch(1 0 0 / 0.06), 0 1px 2px oklch(0 0 0 / 0.5), 0 12px 32px -10px oklch(0 0 0 / 0.65);
-  --page-glow: radial-gradient(1100px 480px at 70% -12%, color-mix(in oklch, var(--primary) 16%, transparent), transparent 62%);
+  --surface-gradient: linear-gradient(180deg, oklch(1 0 0 / 0.07) 0%, oklch(1 0 0 / 0.015) 45%, oklch(0 0 0 / 0.12) 100%);
+  --surface-shadow: inset 0 1px 0 oklch(1 0 0 / 0.13), inset 0 -1px 0 oklch(0 0 0 / 0.45), 0 0 0 1px oklch(1 0 0 / 0.07), 0 2px 4px oklch(0 0 0 / 0.55), 0 18px 40px -12px oklch(0 0 0 / 0.85);
+  --surface-shadow-hover: inset 0 1px 0 oklch(1 0 0 / 0.16), inset 0 -1px 0 oklch(0 0 0 / 0.45), 0 0 0 1px color-mix(in oklch, var(--primary) 35%, transparent), 0 4px 8px oklch(0 0 0 / 0.5), 0 28px 56px -14px oklch(0 0 0 / 0.9), 0 14px 40px -18px color-mix(in oklch, var(--primary) 55%, transparent);
+  --float-shadow: inset 0 1px 0 oklch(1 0 0 / 0.14), 0 0 0 1px oklch(1 0 0 / 0.08), 0 10px 20px -6px oklch(0 0 0 / 0.6), 0 36px 80px -16px oklch(0 0 0 / 0.95);
+  --bevel: linear-gradient(170deg, oklch(1 0 0 / 0.14), oklch(1 0 0 / 0.02) 55%, oklch(0 0 0 / 0.2));
+  --bevel-shadow: inset 0 1px 0 oklch(1 0 0 / 0.18), inset 0 -1px 1px oklch(0 0 0 / 0.4), 0 3px 8px -2px oklch(0 0 0 / 0.6);
+  --well-shadow: inset 0 2px 5px oklch(0 0 0 / 0.55), inset 0 -1px 0 oklch(1 0 0 / 0.05);
+  --page-glow: radial-gradient(1200px 560px at 72% -14%, color-mix(in oklch, var(--primary) 26%, transparent), transparent 62%), radial-gradient(900px 600px at -10% 110%, color-mix(in oklch, var(--primary) 10%, transparent), transparent 60%);
 }
 
 html[data-mode="light"] {
-  --background: oklch(0.975 0.004 270);
+  --background: oklch(0.945 0.006 270);
   --foreground: oklch(0.21 0.01 260);
   --card: oklch(1 0 0);
   --card-2: oklch(0.985 0.002 260);
   --card-foreground: oklch(0.21 0.01 260);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.21 0.01 260);
-  --secondary: oklch(0.967 0.003 260);
+  --secondary: oklch(0.955 0.005 270);
   --secondary-foreground: oklch(0.25 0.01 260);
-  --muted: oklch(0.967 0.003 260);
+  --muted: oklch(0.94 0.006 270);
   --muted-foreground: oklch(0.52 0.015 260);
   --accent: oklch(0.96 0.004 260);
   --accent-foreground: oklch(0.25 0.01 260);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0.004 260);
+  --border: oklch(0.2 0.02 270 / 0.08);
   --input: oklch(0.922 0.004 260);
   --chart-2: oklch(0.6 0.1 260);
   --chart-3: oklch(0.7 0.06 260);
   --chart-4: oklch(0.8 0.04 260);
   --chart-5: oklch(0.87 0.03 260);
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0.002 260);
+  --sidebar: oklch(1 0 0);
   --sidebar-foreground: oklch(0.21 0.01 260);
   --sidebar-accent: oklch(0.96 0.004 260);
   --sidebar-accent-foreground: oklch(0.25 0.01 260);
   --sidebar-border: oklch(0.922 0.004 260);
 
-  --surface-gradient: linear-gradient(180deg, oklch(1 0 0 / 0.6), oklch(1 0 0 / 0) 60%);
-  --surface-shadow: inset 0 1px 0 oklch(1 0 0 / 0.9), 0 0 0 1px oklch(0.2 0.02 270 / 0.06), 0 1px 2px oklch(0.2 0.02 270 / 0.06), 0 12px 28px -12px oklch(0.2 0.02 270 / 0.2);
-  --page-glow: radial-gradient(1100px 480px at 70% -12%, color-mix(in oklch, var(--primary) 7%, transparent), transparent 62%);
+  --surface-gradient: linear-gradient(180deg, oklch(1 0 0 / 0.9), oklch(1 0 0 / 0) 55%, oklch(0.2 0.02 270 / 0.03));
+  --surface-shadow: inset 0 1px 0 oklch(1 0 0 / 1), inset 0 -1px 0 oklch(0.2 0.02 270 / 0.06), 0 0 0 1px oklch(0.2 0.02 270 / 0.07), 0 2px 4px oklch(0.2 0.02 270 / 0.08), 0 18px 36px -14px oklch(0.2 0.02 270 / 0.3);
+  --surface-shadow-hover: inset 0 1px 0 oklch(1 0 0 / 1), 0 0 0 1px color-mix(in oklch, var(--primary) 30%, transparent), 0 4px 8px oklch(0.2 0.02 270 / 0.1), 0 28px 50px -16px oklch(0.2 0.02 270 / 0.38);
+  --float-shadow: inset 0 1px 0 oklch(1 0 0 / 1), 0 0 0 1px oklch(0.2 0.02 270 / 0.08), 0 12px 24px -8px oklch(0.2 0.02 270 / 0.2), 0 36px 70px -18px oklch(0.2 0.02 270 / 0.35);
+  --bevel: linear-gradient(170deg, oklch(1 0 0 / 0.95), oklch(1 0 0 / 0.2) 55%, oklch(0.2 0.02 270 / 0.06));
+  --bevel-shadow: inset 0 1px 0 oklch(1 0 0 / 1), 0 0 0 1px oklch(0.2 0.02 270 / 0.07), 0 3px 6px -2px oklch(0.2 0.02 270 / 0.2);
+  --well-shadow: inset 0 2px 4px oklch(0.2 0.02 270 / 0.12), inset 0 -1px 0 oklch(1 0 0 / 0.8);
+  --page-glow: radial-gradient(1200px 560px at 72% -14%, color-mix(in oklch, var(--primary) 10%, transparent), transparent 62%);
 }
 
 /* ---- ACCENT: primary color ---- */
@@ -239,56 +249,124 @@ html[data-theme="rose"] {
   }
 }
 /* ============================================================
- * DEPTH — raised surfaces, lit buttons, glowing page.
- * Unlayered on purpose so it sits above Tailwind utilities; each
- * rule only adds background-image / box-shadow and never touches
- * focus rings (buttons skip :focus-visible).
+ * DEPTH ("3D") — layered, lit surfaces.
+ * Unlayered on purpose so it sits above Tailwind utilities. Rules
+ * only add background-image / box-shadow / transform and skip
+ * :focus-visible so keyboard focus rings stay intact.
  * ============================================================ */
 
 .app-canvas {
   background-image: var(--page-glow);
   background-repeat: no-repeat;
+  background-attachment: fixed;
 }
 
+/* Raised panels: cards and any rounded card surface. */
 [data-slot="card"],
-.bg-card[class*="rounded"] {
+.bg-card[class*="rounded"],
+.panel-3d {
   background-image: var(--surface-gradient);
   box-shadow: var(--surface-shadow);
   border-color: transparent;
 }
+.panel-3d > * { border-width: 0; }
 
-[data-slot="button"].bg-primary:not(:disabled):not(:focus-visible),
-.bg-primary.btn-3d {
-  background-image: linear-gradient(180deg, oklch(1 0 0 / 0.16), oklch(0 0 0 / 0.1));
-  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.28), 0 1px 2px oklch(0 0 0 / 0.3), 0 8px 20px -8px color-mix(in oklch, var(--primary) 75%, transparent);
+/* Clickable cards lift toward the viewer. */
+a.bg-card[class*="rounded"],
+button.bg-card[class*="rounded"],
+[data-slot="card"]:has(> a:only-child),
+.lift-3d {
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+a.bg-card[class*="rounded"]:hover,
+button.bg-card[class*="rounded"]:hover,
+.lift-3d:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--surface-shadow-hover);
 }
 
-[data-slot="button"][class*="border-border"]:not(:focus-visible),
-[data-slot="button"].bg-secondary:not(:focus-visible) {
-  background-image: linear-gradient(180deg, oklch(1 0 0 / 0.04), oklch(1 0 0 / 0));
-  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.06), 0 1px 2px oklch(0 0 0 / 0.25);
+/* Floating layers: menus, popovers, dialogs, sheets. */
+[data-slot="dialog-content"],
+[data-slot="popover-content"],
+[data-slot="dropdown-menu-content"],
+[data-slot="select-content"],
+[data-slot="sheet-content"],
+.bg-popover[class*="rounded"] {
+  background-image: var(--surface-gradient);
+  box-shadow: var(--float-shadow);
+  border-color: transparent;
 }
 
-/* Raised "chip" for the logo and icon tiles. */
-.tile-3d {
-  background-image: linear-gradient(160deg, oklch(1 0 0 / 0.22), oklch(0 0 0 / 0.18));
-  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.35), inset 0 -2px 4px oklch(0 0 0 / 0.22), 0 8px 18px -6px color-mix(in oklch, var(--primary) 70%, transparent);
+/* Beveled chips: avatars, icon tiles, pills on muted fill. */
+.bg-muted[class*="rounded"]:not(input):not(textarea),
+[data-slot="avatar"],
+[data-slot="tabs-list"] [data-state="active"] {
+  background-image: var(--bevel);
+  box-shadow: var(--bevel-shadow);
 }
 
-/* Active sidebar row: a lit, slightly raised pill. */
-.nav-active-3d {
-  background-image: linear-gradient(180deg, color-mix(in oklch, var(--primary) 24%, transparent), color-mix(in oklch, var(--primary) 10%, transparent));
-  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.08), inset 0 0 0 1px color-mix(in oklch, var(--primary) 38%, transparent);
-}
-
-/* Inset "well" for inputs: reads as carved into the surface. */
+/* Carved wells: inputs, tab tracks, progress tracks. */
 [data-slot="input"]:not(:focus-visible),
 [data-slot="textarea"]:not(:focus-visible),
-[data-slot="select-trigger"]:not(:focus-visible) {
-  box-shadow: inset 0 1px 2px oklch(0 0 0 / 0.35);
+[data-slot="select-trigger"]:not(:focus-visible),
+[data-slot="tabs-list"],
+.well-3d {
+  box-shadow: var(--well-shadow);
+}
+
+/* Primary actions: lit, glossy and glowing. */
+[data-slot="button"].bg-primary:not(:disabled):not(:focus-visible),
+.bg-primary.btn-3d {
+  background-image: linear-gradient(180deg, oklch(1 0 0 / 0.24), oklch(1 0 0 / 0.04) 50%, oklch(0 0 0 / 0.16));
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.38), inset 0 -2px 3px oklch(0 0 0 / 0.22), 0 2px 4px oklch(0 0 0 / 0.35), 0 10px 26px -8px color-mix(in oklch, var(--primary) 85%, transparent);
+  transition: transform 150ms ease, box-shadow 150ms ease;
+}
+[data-slot="button"].bg-primary:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.42), inset 0 -2px 3px oklch(0 0 0 / 0.22), 0 4px 8px oklch(0 0 0 / 0.35), 0 16px 34px -8px color-mix(in oklch, var(--primary) 95%, transparent);
+}
+[data-slot="button"].bg-primary:not(:disabled):active {
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 4px oklch(0 0 0 / 0.3), 0 4px 12px -6px color-mix(in oklch, var(--primary) 70%, transparent);
+}
+
+/* Secondary / outline buttons: raised keys. */
+[data-slot="button"][class*="border-border"]:not(:focus-visible),
+[data-slot="button"].bg-secondary:not(:focus-visible) {
+  background-image: var(--bevel);
+  box-shadow: var(--bevel-shadow);
+}
+
+/* Logo and icon tiles: glossy accent blocks. */
+.tile-3d {
+  background-image: linear-gradient(155deg, oklch(1 0 0 / 0.34), oklch(1 0 0 / 0.06) 50%, oklch(0 0 0 / 0.24));
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.5), inset 0 -3px 5px oklch(0 0 0 / 0.28), 0 3px 6px oklch(0 0 0 / 0.4), 0 12px 26px -8px color-mix(in oklch, var(--primary) 85%, transparent);
+}
+
+/* Active navigation row: lit, raised pill with an accent glow. */
+.nav-active-3d {
+  background-image: linear-gradient(180deg, color-mix(in oklch, var(--primary) 34%, transparent), color-mix(in oklch, var(--primary) 14%, transparent));
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.16), inset 0 -1px 0 oklch(0 0 0 / 0.3), inset 0 0 0 1px color-mix(in oklch, var(--primary) 45%, transparent), 0 8px 22px -10px color-mix(in oklch, var(--primary) 90%, transparent);
+}
+
+/* Chat bubbles: outbound glossy, inbound beveled. */
+.bubble-out {
+  background-image: linear-gradient(180deg, oklch(1 0 0 / 0.2), oklch(0 0 0 / 0.12));
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.3), 0 6px 16px -8px color-mix(in oklch, var(--primary) 80%, transparent);
+}
+.bubble-in {
+  background-image: var(--bevel);
+  box-shadow: var(--bevel-shadow);
 }
 
 .font-num {
   font-family: var(--font-geist-mono), ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  a.bg-card[class*="rounded"]:hover,
+  button.bg-card[class*="rounded"]:hover,
+  .lift-3d:hover,
+  [data-slot="button"].bg-primary:not(:disabled):hover { transform: none; }
 }

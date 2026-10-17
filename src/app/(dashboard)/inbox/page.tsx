@@ -574,13 +574,13 @@ function InboxPageInner() {
         </div>
       )}
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden lg:gap-3 lg:p-3">
         {/* Left panel: Conversation list.
             Hidden on mobile when a conversation is selected so the
             thread can occupy the full width. Always visible on lg+. */}
         <div
           className={cn(
-            "flex h-full flex-1 lg:flex-none",
+            "flex h-full flex-1 lg:flex-none panel-3d lg:overflow-hidden lg:rounded-2xl",
             hasActiveConv ? "hidden lg:flex" : "flex",
           )}
         >
@@ -605,7 +605,7 @@ function InboxPageInner() {
             on the right. Issue #165. */}
         <div
           className={cn(
-            "flex h-full min-w-0 flex-1 lg:flex",
+            "flex h-full min-w-0 flex-1 lg:flex panel-3d lg:overflow-hidden lg:rounded-2xl",
             hasActiveConv ? "flex" : "hidden lg:flex",
           )}
         >
@@ -631,7 +631,7 @@ function InboxPageInner() {
             On mobile it's always hidden (the `lg:block` below), so the
             toggle — which is itself desktop-only — never affects it. */}
         {contactPanelOpen && (
-          <div className="hidden lg:block">
+          <div className="hidden lg:block panel-3d lg:overflow-hidden lg:rounded-2xl">
             <ContactSidebar contact={activeContact} />
           </div>
         )}
